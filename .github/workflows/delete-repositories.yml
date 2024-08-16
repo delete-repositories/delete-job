@@ -1,0 +1,63 @@
+name: Delete Repos with no collaborators
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Perform a dry run'
+        required: false
+        default: 'true'
+#  schedule:
+#    - cron: '0 0 * * *'  # Runs daily at midnight UTC
+
+jobs:
+  delete_repos:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Authenticate GitHub CLI
+      run: echo "${{ secrets.ORG_PAT }}" | gh auth login --with-token
+
+    - name: Run script to list or delete repos with no collaborators
+      env:
+        ORG: ${{ github.repository_owner }}
+        DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}  # Default to false for scheduled runs
+      run: |
+        repos=$(gh repo list $ORG --json name --jq '.[].name')
+        issue_body="### Repositories with no collaborators:\n\n"
+        excluded_repositories="### Excluded repositories:\n\n"
+        for repo in $repos; do
+        if [[ $repo == "series-intro-to-github-flow"* ]]; then
+            collaborators=$(gh api "repos/$ORG/$repo/collaborators?affiliation=outside" --jq 'length')
+            if [ "$collaborators" -eq 0 ]; then
+                issue_body+="- $ORG/$repo (Collaborators: $collaborators)"
+                if [ "$DRY_RUN" != "true" ]; then
+                gh repo delete $ORG/$repo --confirm
+                issue_body+=" (Deleted)"
+                echo "Deleted repository: $ORG/$repo"
+                fi
+                issue_body+="\n"
+            fi
+        else
+            excluded_repositories+="- $ORG/$repo\n"
+        fi
+
+        done
+        echo -e "$issue_body" > issue_body.txt
+        echo -e "$excluded_repositories" >> issue_body.txt
+
+
+    - name: Create issue with list of repos with no collaborators
+      if: always()
+      env:
+        DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      run: |
+        current_date=$(date +"%Y-%m-%d %H:%M:%S")
+        title="$current_date - Repositories with no collaborators job"
+        if [ "$DRY_RUN" == "true" ]; then
+          title="$title (DRY RUN)"
+        fi
+        gh issue create --title "$title" --body "$(cat issue_body.txt)"
